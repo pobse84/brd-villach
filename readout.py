@@ -5,6 +5,13 @@ import pandas as pd
 folder = r"C:\Users\gregor.pobegen\OneDrive - Österreichischer Bergrettungsdienst Landesorganisation Kärnten\Dateien von IT - Bergrettung - OS_Villach\Beteiligung"
 types = ["Einsätze", "Übungen", "Dienste", "Übungstour"] # Sicherheitstage, 
 
+criteria = { # mindestens
+	"Einsätze": 5,
+	"Übungen": 6,
+	"Dienste": 2,
+	"Übungstour": 1,
+}
+
 # scan subfolder to see what years are available
 base_path = Path(folder)
 available_years = sorted([int(p.name) for p in base_path.iterdir() if p.is_dir()])
@@ -82,17 +89,24 @@ with pd.ExcelWriter(summary_output_file, engine='xlsxwriter') as writer:
 	green_format = workbook.add_format({'bg_color': 'green'})
 	number_of_rows = len(summary_data)+2
 	number_of_cols = len(available_years)*len(available_files)+2
-	worksheet.conditional_format(3, 3, number_of_rows, number_of_cols, # first row, first col, last row, last col
-	   {'type':     'cell',
-        'criteria': 'less than',
-        'value':    5,
-        'format':   red_format}
-		)
-	# all others are green
-	worksheet.conditional_format(3, 3, number_of_rows, number_of_cols, # first row, first col, last row, last col
-	   {'type':     'cell',
-		'criteria': 'greater than or equal to',
-		'value':    5,
-		'format':   green_format}
-		)
+	for criterium in criteria:
+		for year in available_years:
+			# index the year and the criterium
+			col_index_year = 3 + list(summary_data.columns.get_level_values(0)).index(year)
+			col_index = col_index_year + list(summary_data.columns.get_level_values(1)).index(criterium)
+			worksheet.conditional_format(3, col_index, number_of_rows, col_index, # first row, first col, last row, last col
+			{'type':     'cell',
+				'criteria': 'less than',
+				'value':    criteria[criterium],
+				'format':   red_format}
+				)
+			# all others are green
+			worksheet.conditional_format(3, col_index, number_of_rows, col_index, # first row, first col, last row, last col
+			{'type':     'cell',
+				'criteria': 'greater than or equal to',
+				'value':    criteria[criterium],
+				'format':   green_format}
+				)
+			# print the criteria right to the tabel for documentation
+			worksheet.write(2, col_index, f"Min: {criteria[criterium]}")
 
