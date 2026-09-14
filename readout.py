@@ -8,8 +8,8 @@ types = ["Einsätze", "Übungen", "Dienste", "Übungstour"] # Sicherheitstage,
 criteria = { # mindestens
 	"Einsätze": 5,
 	"Übungen": 6,
-	"Dienste": 2,
-	"Übungstour": 1,
+	"Dienste": 0,
+	"Übungstour": 0,
 }
 
 # scan subfolder to see what years are available
@@ -74,6 +74,20 @@ for year in available_years[::-1]:  # reverse order to have the latest year firs
 	# then add the data to the summary dataframe, if the summary dataframe is empty, just assign it, otherwise concat
 	summary_data = pd.concat([summary_data, df], axis=1)
 
+# determine whether each participant met the criteria in the latest and previous year
+latest_year = available_years[-1] if available_years else None
+previous_year = available_years[-2] if len(available_years) > 1 else None
+status_by_person = pd.Series("red", index=summary_data.index, dtype="object")
+if latest_year is not None:
+	latest_year_df = summary_data.xs(latest_year, axis=1, level=0, drop_level=True)
+	latest_met = latest_year_df[list(criteria)].ge(pd.Series(criteria)).all(axis=1)
+	status_by_person[latest_met] = "green"
+	if previous_year is not None:
+		previous_year_df = summary_data.xs(previous_year, axis=1, level=0, drop_level=True)
+		previous_met = previous_year_df[list(criteria)].ge(pd.Series(criteria)).all(axis=1)
+		status_by_person[~latest_met & previous_met] = "orange"
+		status_by_person[~latest_met & ~previous_met] = "red"
+
 # save the summary data to a new file
 summary_output_file = base_path / "Beteiligung Zusammenfassung.xlsx"
 # use xlsxwriter to format the output file, so that the first row is bold and the columns are auto-sized and the values are marked red if the criteria is not reached
@@ -87,6 +101,10 @@ with pd.ExcelWriter(summary_output_file, engine='xlsxwriter') as writer:
 	# mark the values in red if the criteria is not reached, i.e. if the value is less than 5 for Einsätze, less than 6 for Übungen, less than 3 for Dienste and less than 2 for Übungstour
 	red_format = workbook.add_format({'bg_color': 'red'})
 	green_format = workbook.add_format({'bg_color': 'green'})
+	orange_format = workbook.add_format({'bg_color': 'orange'})
+	name_green_format = workbook.add_format({'bg_color': '#90EE90'})
+	name_orange_format = workbook.add_format({'bg_color': '#FFD580'})
+	name_red_format = workbook.add_format({'bg_color': '#FF7F7F'})
 	number_of_rows = len(summary_data)+2
 	number_of_cols = len(available_years)*len(available_files)+2
 	for criterium in criteria:
@@ -109,4 +127,13 @@ with pd.ExcelWriter(summary_output_file, engine='xlsxwriter') as writer:
 				)
 			# print the criteria right to the tabel for documentation
 			worksheet.write(2, col_index, f"Min: {criteria[criterium]}")
+
+	for row_index, status in enumerate(status_by_person.values, start=3):
+		name_format = {
+			"green": name_green_format,
+			"orange": name_orange_format,
+			"red": name_red_format,
+		}.get(status, name_red_format)
+		for col_index in range(3):
+			worksheet.write(row_index, col_index, summary_data.index[row_index - 3][col_index], name_format)
 
