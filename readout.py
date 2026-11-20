@@ -4,7 +4,7 @@ import pandas as pd
 # Set this to your Excel directory.
 folder = r"C:\Users\gregor.pobegen\OneDrive - Österreichischer Bergrettungsdienst Landesorganisation Kärnten\Dateien von IT - Bergrettung - OS_Villach\Beteiligung"
 types = ["Einsätze", "Übungen", "Dienste", "Übungstour"] # Sicherheitstage, 
-
+summary_output_file_name = "Beteiligung Zusammenfassung.xlsx"
 criteria = { # mindestens
 	"Einsätze": 5,
 	"Übungen": 6,
@@ -89,7 +89,7 @@ if latest_year is not None:
 		status_by_person[~latest_met & ~previous_met] = "red"
 
 # save the summary data to a new file
-summary_output_file = base_path / "Beteiligung Zusammenfassung.xlsx"
+summary_output_file = base_path / summary_output_file_name
 # use xlsxwriter to format the output file, so that the first row is bold and the columns are auto-sized and the values are marked red if the criteria is not reached
 with pd.ExcelWriter(summary_output_file, engine='xlsxwriter') as writer:
 	summary_data.to_excel(writer, sheet_name="Zusammenfassung")
