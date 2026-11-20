@@ -74,66 +74,111 @@ for year in available_years[::-1]:  # reverse order to have the latest year firs
 	# then add the data to the summary dataframe, if the summary dataframe is empty, just assign it, otherwise concat
 	summary_data = pd.concat([summary_data, df], axis=1)
 
-# determine whether each participant met the criteria in the latest and previous year
-latest_year = available_years[-1] if available_years else None
-previous_year = available_years[-2] if len(available_years) > 1 else None
-status_by_person = pd.Series("red", index=summary_data.index, dtype="object")
-if latest_year is not None:
-	latest_year_df = summary_data.xs(latest_year, axis=1, level=0, drop_level=True)
-	latest_met = latest_year_df[list(criteria)].ge(pd.Series(criteria)).all(axis=1)
-	status_by_person[latest_met] = "green"
-	if previous_year is not None:
-		previous_year_df = summary_data.xs(previous_year, axis=1, level=0, drop_level=True)
-		previous_met = previous_year_df[list(criteria)].ge(pd.Series(criteria)).all(axis=1)
-		status_by_person[~latest_met & previous_met] = "orange"
-		status_by_person[~latest_met & ~previous_met] = "red"
+# determine the Ampel (traffic light) for every participant and every year:
+#   green:  criteria met in that year
+#   orange: criteria not met in that year, but met in the previous year
+#   red:    criteria not met in that year and not met in the previous year
+# for the first year there is no previous year, so it can only be green or orange
+summary_years = sorted(summary_data.columns.get_level_values(0).unique())
+ampel_by_year = pd.DataFrame(index=summary_data.index)
+previous_met = pd.Series(True, index=summary_data.index)  # first year: benefit of the doubt
+for year in summary_years:
+	year_df = summary_data.xs(year, axis=1, level=0, drop_level=True)
+	# missing values mean no participation, i.e. 0
+	met = year_df[list(criteria)].fillna(0).ge(pd.Series(criteria)).all(axis=1)
+	status = pd.Series("red", index=summary_data.index, dtype="object")
+	status[~met & previous_met] = "orange"
+	status[met] = "green"
+	ampel_by_year[year] = status
+	previous_met = met
+ampel_by_year = ampel_by_year[summary_years[::-1]]  # latest year first, like the summary
+latest_year = summary_years[-1] if summary_years else None
+status_by_person = ampel_by_year[latest_year] if latest_year is not None else pd.Series("red", index=summary_data.index, dtype="object")
+
+ampel_labels = {"green": "grün", "orange": "orange", "red": "rot"}
+ampel_colors = {"green": "#90EE90", "orange": "#FFD580", "red": "#FF7F7F"}
 
 # save the summary data to a new file
+# every year is a block (Ampel first, then the types) with a border around it and an empty column in between
 summary_output_file = base_path / summary_output_file_name
-# use xlsxwriter to format the output file, so that the first row is bold and the columns are auto-sized and the values are marked red if the criteria is not reached
 with pd.ExcelWriter(summary_output_file, engine='xlsxwriter') as writer:
-	summary_data.to_excel(writer, sheet_name="Zusammenfassung")
 	workbook = writer.book
-	worksheet = writer.sheets["Zusammenfassung"]
-	# format the first row as bold and centered
-	format_bold_centered = workbook.add_format({'bold': True, 'align': 'center'})
-	worksheet.set_row(0, None, format_bold_centered)
-	# mark the values in red if the criteria is not reached, i.e. if the value is less than 5 for Einsätze, less than 6 for Übungen, less than 3 for Dienste and less than 2 for Übungstour
-	red_format = workbook.add_format({'bg_color': 'red'})
-	green_format = workbook.add_format({'bg_color': 'green'})
-	orange_format = workbook.add_format({'bg_color': 'orange'})
-	name_green_format = workbook.add_format({'bg_color': '#90EE90'})
-	name_orange_format = workbook.add_format({'bg_color': '#FFD580'})
-	name_red_format = workbook.add_format({'bg_color': '#FF7F7F'})
-	number_of_rows = len(summary_data)+2
-	number_of_cols = len(available_years)*len(available_files)+2
-	for criterium in criteria:
-		for year in available_years:
-			# index the year and the criterium
-			col_index_year = 3 + list(summary_data.columns.get_level_values(0)).index(year)
-			col_index = col_index_year + list(summary_data.columns.get_level_values(1)).index(criterium)
-			worksheet.conditional_format(3, col_index, number_of_rows, col_index, # first row, first col, last row, last col
-			{'type':     'cell',
-				'criteria': 'less than',
-				'value':    criteria[criterium],
-				'format':   red_format}
-				)
-			# all others are green
-			worksheet.conditional_format(3, col_index, number_of_rows, col_index, # first row, first col, last row, last col
-			{'type':     'cell',
-				'criteria': 'greater than or equal to',
-				'value':    criteria[criterium],
-				'format':   green_format}
-				)
-			# print the criteria right to the tabel for documentation
-			worksheet.write(2, col_index, f"Min: {criteria[criterium]}")
+	worksheet = workbook.add_worksheet("Zusammenfassung")
 
-	for row_index, status in enumerate(status_by_person.values, start=3):
-		name_format = {
-			"green": name_green_format,
-			"orange": name_orange_format,
-			"red": name_red_format,
-		}.get(status, name_red_format)
-		for col_index in range(3):
-			worksheet.write(row_index, col_index, summary_data.index[row_index - 3][col_index], name_format)
+	# xlsxwriter needs one format object per combination of properties, so cache them
+	format_cache = {}
+	def fmt(**props):
+		key = tuple(sorted(props.items()))
+		if key not in format_cache:
+			format_cache[key] = workbook.add_format(props)
+		return format_cache[key]
 
+	def write_value(sheet, row, col, value, cell_format):
+		if pd.isna(value):
+			sheet.write_blank(row, col, None, cell_format)
+		else:
+			sheet.write(row, col, value, cell_format)
+
+	header_rows = 3  # row 0: year, row 1: column names, row 2: minimum criteria
+	last_row = header_rows + len(summary_data) - 1
+	index_names = list(summary_data.index.names)
+
+	# names, colored by the Ampel of the latest year
+	for col, name in enumerate(index_names):
+		worksheet.write(header_rows - 1, col, name, fmt(bold=True))
+	for row, (person, status) in enumerate(zip(summary_data.index, status_by_person.values), start=header_rows):
+		for col, value in enumerate(person):
+			write_value(worksheet, row, col, value, fmt(bg_color=ampel_colors[status]))
+	worksheet.set_column(0, len(index_names) - 1, 15)
+
+	col = len(index_names)
+	for year in summary_years[::-1]:  # latest year first
+		year_df = summary_data.xs(year, axis=1, level=0, drop_level=True)
+		block_columns = ["Ampel"] + list(year_df.columns)
+		first_col, last_col = col, col + len(block_columns) - 1
+
+		def border(row, col):
+			b = {}
+			if row == 0: b["top"] = 2
+			if row == last_row: b["bottom"] = 2
+			if col == first_col: b["left"] = 2
+			if col == last_col: b["right"] = 2
+			return b
+
+		# header: year (merged over the block), column names, minimum criteria
+		worksheet.merge_range(0, first_col, 0, last_col, year, fmt(bold=True, align="center", top=2, left=2, right=2))
+		for offset, column_name in enumerate(block_columns):
+			c = first_col + offset
+			worksheet.write(1, c, column_name, fmt(bold=True, align="center", **border(1, c)))
+			min_text = f"Min: {criteria[column_name]}" if column_name in criteria else None
+			write_value(worksheet, 2, c, min_text, fmt(align="center", **border(2, c)))
+
+		# data
+		for row_offset, person in enumerate(summary_data.index):
+			row = header_rows + row_offset
+			status = ampel_by_year.at[person, year]
+			worksheet.write(row, first_col, ampel_labels[status], fmt(bg_color=ampel_colors[status], align="center", **border(row, first_col)))
+			for offset, column_name in enumerate(year_df.columns, start=1):
+				c = first_col + offset
+				value = year_df.at[person, column_name]
+				# missing values mean no participation, i.e. 0
+				value = 0 if pd.isna(value) else int(value)
+				props = border(row, c)
+				props["align"] = "center"
+				if column_name in criteria:
+					props["bg_color"] = "green" if value >= criteria[column_name] else "red"
+				worksheet.write(row, c, value, fmt(**props))
+
+		worksheet.set_column(first_col, last_col, 11)
+		worksheet.set_column(last_col + 1, last_col + 1, 3)  # empty column between the years
+		col = last_col + 2
+
+	worksheet.freeze_panes(header_rows, len(index_names))
+
+	# separate sheet with only the Ampel over the years (latest year first)
+	ampel_by_year.map(ampel_labels.get).to_excel(writer, sheet_name="Ampel")
+	ampel_sheet = writer.sheets["Ampel"]
+	for col_offset, year in enumerate(ampel_by_year.columns):
+		for row, status in enumerate(ampel_by_year[year].values, start=1):
+			ampel_sheet.write(row, len(index_names) + col_offset, ampel_labels[status], fmt(bg_color=ampel_colors[status], align="center"))
+	ampel_sheet.set_column(0, len(index_names) - 1, 15)
